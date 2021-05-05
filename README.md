@@ -1,8 +1,5 @@
 # `grab-mac-link.el`
 
-[![MELPA](https://melpa.org/packages/grab-mac-link-badge.svg)](https://melpa.org/#/grab-mac-link)
-[![MELPA Stable](https://stable.melpa.org/packages/grab-mac-link-badge.svg)](https://stable.melpa.org/#/grab-mac-link)
-
 Grab link from Mac Apps.
 
 ## Supported Apps
@@ -10,6 +7,7 @@ Grab link from Mac Apps.
 - Chrome
 - Safari
 - Firefox
+- Vivaldi
 - Finder
 - Mail
 - Terminal
@@ -27,39 +25,48 @@ Grab link from Mac Apps.
 ### `M-x grab-mac-link`
 
 Prompt for an application to grab a link from and prompt for a link
-type to insert as, then insert it at point.
+type to insert as, then insert it at point. With one universal
+argument, copies the link instead of inserting it. With two universal
+arguments, uses the default app and link-type instead of prompting.
 
-### `(grab-mac-link app &optional link-type)`
+### Customization
 
-Grab link from App and return it in LINK-TYPE.
+Set `grab-mac-link-preferred-app' to the name of the app to use.
 
 ``` emacs-lisp
-(grab-mac-link 'chrome)
-    ⇒ "https://www.wikipedia.org/"
-
-(grab-mac-link 'chrome 'plain)
-    ⇒ "https://www.wikipedia.org/"
-
-(grab-mac-link 'chrome 'markdown)
-    ⇒ "[Wikipedia](https://www.wikipedia.org/)"
-
-(grab-mac-link 'chrome 'org)
-    ⇒ "[[https://www.wikipedia.org/][Wikipedia]]"
-
-(grab-mac-link 'terminal)
-    ⇒ "/Users/xcy/.emacs.d"
+(setq grab-mac-link-preferred-app "firefox")
 ```
 
-### `M-x grab-mac-link-dwim`
-
-Choose an application according to `grab-mac-link-dwim-favourite-app` and link
-type according to the current buffer's major mode, i.e., `major-mode`. For
-example, if you use Chrome a lot, you may want to set this in your init file:
+Set `grab-mac-link-preferred-link-type' to the name of the link-type, eg, "org".
+Choose an application according to
+`grab-mac-link-dwim-favourite-app` and link type according to the
+current buffer's major mode, i.e., `major-mode`.
 
 ``` emacs-lisp
-(setq grab-mac-link-dwim-favourite-app 'chrome)
+;; no preferred type, will prompt
+(setq grab-mac-link-preferred-link-type nil)
+
+;; prefer org-mode style
+(setq grab-mac-link-preferred-link-type "org")
+
+;; guess the preferred type from the current buffer's mode
+(setq grab-mac-link-preferred-link-type 'from-mode)
+```
+
+Remove an app from the menu.
+```emacs-lisp
+(setq gml--app-alist (cl-remove "mail" gml--app-alist
+                                :test #'string-equal :key #'car))
 ```
 
 ## Acknowledgment
 
-AppleScript code used in this program is borrowed from [`org-mac-link.el`](http://orgmode.org/worg/org-contrib/org-mac-link.html).
+AppleScript code used in this program is borrowed from
+[`org-mac-link.el`](http://orgmode.org/worg/org-contrib/org-mac-link.html).
+
+This is a fork of [xuchunyang/grab-mac-link.el: Grab link from Mac
+Apps and insert it into
+Emacs](https://github.com/xuchunyang/grab-mac-link.el), although I've
+changed so much of the code that it is less of a fork, and more an
+entirely new set of silverware. Many functions and variable names have
+changed, so it is not backward compatible.

@@ -35,10 +35,14 @@
 
 ;;; Commentary:
 
-;; The following applications are supportted:
+;; Grabs a URL from a Mac application, and insert in current buffer,
+;; or store on kill ring (or org-stored-links).
+
+;; The following applications are supported:
 ;; - Chrome
 ;; - Safari
 ;; - Firefox
+;; - Vivaldi
 ;; - Finder
 ;; - Mail
 ;; - Terminal
@@ -46,91 +50,87 @@
 ;;
 ;; The following link types are supported:
 ;; - plain:    https://www.wikipedia.org/
-;; - markdonw: [Wikipedia](https://www.wikipedia.org/)
+;; - markdown: [Wikipedia](https://www.wikipedia.org/)
 ;; - org:      [[https://www.wikipedia.org/][Wikipedia]]
 ;; - html:     <a href="https://www.wikipedia.org/">Wikipedia</a>
 ;;
-;; To use, type M-x grab-mac-link or call `grab-mac-link' from Lisp
+;; To use, type M-x grab-mac-link
 ;;
-;;   (grab-mac-link APP &optional LINK-TYPE)
+;;   (grab-mac-link APP)
 ;;
-;; There is a DWIM version, M-x grab-mac-link-dwim, it chooses an application
-;; according to `grab-mac-link-dwim-favourite-app' and link type according to
-;; `major-mode'.
 
 ;;; Code:
 
+(require 's)
+(require 'cl-lib)
+(require 'org)
+
 (declare-function org-add-link-type "org-compat" (type &optional follow export))
-(declare-function org-make-link-string "org" (link &optional description))
+(declare-function org-link-make-string "ol" (link &optional description))
 
 (defvar org-stored-links)
 
-(defun grab-mac-link-split (as-link)
+(defun gml--split (as-link)
   (split-string as-link "::split::"))
 
-(defun grab-mac-link-unquote (s)
+(defun gml--unquote (s)
   (if (string-prefix-p "\"" s)
       (substring s 1 -1)
     s))
 
-(defun grab-mac-link-make-plain-link (url _name)
+(defun gml--make-plain-link (url _name)
   url)
 
-(defvar grab-mac-link-org-setup-p nil)
+;; Handle links from Skim.app
+;;
+;; Original code & idea by Christopher Suckling (org-mac-protocol)
 
-(defun grab-mac-link-org-setup ()
-  (require 'org)
-  (unless (require 'org-mac-link nil 'no-error)
-    ;; Handle links from Skim.app
-    ;;
-    ;; Original code & idea by Christopher Suckling (org-mac-protocol)
+(org-add-link-type "skim" 'org-mac-skim-open)
 
-    (org-add-link-type "skim" 'org-mac-skim-open)
+(defun org-mac-skim-open (uri)
+  "Visit page of pdf in Skim"
+  (let* ((page (when (string-match "::\\(.+\\)\\'" uri)
+                 (match-string 1 uri)))
+         (document (substring uri 0 (match-beginning 0))))
+    (do-applescript
+     (concat
+      "tell application \"Skim\"\n"
+      "activate\n"
+      "set theDoc to \"" document "\"\n"
+      "set thePage to " page "\n"
+      "open theDoc\n"
+      "go document 1 to page thePage of document 1\n"
+      "end tell"))))
 
-    (defun org-mac-skim-open (uri)
-      "Visit page of pdf in Skim"
-      (let* ((page (when (string-match "::\\(.+\\)\\'" uri)
-                     (match-string 1 uri)))
-             (document (substring uri 0 (match-beginning 0))))
-        (do-applescript
-         (concat
-          "tell application \"Skim\"\n"
-          "activate\n"
-          "set theDoc to \"" document "\"\n"
-          "set thePage to " page "\n"
-          "open theDoc\n"
-          "go document 1 to page thePage of document 1\n"
-          "end tell"))))
+;; Handle links from Mail.app
 
-    ;; Handle links from Mail.app
+(org-add-link-type "message" 'org-mac-message-open)
 
-    (org-add-link-type "message" 'org-mac-message-open)
-
-    (defun org-mac-message-open (message-id)
-      "Visit the message with MESSAGE-ID.
+(defun org-mac-message-open (message-id)
+  "Visit the message with MESSAGE-ID.
 This will use the command `open' with the message URL."
-      (start-process (concat "open message:" message-id) nil
-                     "open" (concat "message://<" (substring message-id 2) ">")))))
+  (start-process (concat "open message:" message-id) nil
+                 "open" (concat "message://<" (substring message-id 2) ">")))
 
-(defun grab-mac-link-make-org-link (url name)
-  (unless grab-mac-link-org-setup-p
-    (setq grab-mac-link-org-setup-p t)
-    (grab-mac-link-org-setup))
-  (org-make-link-string url name))
+(defun gml--make-org-link (url name)
+  "Make an org-mode compatible link."
+  ;; avoid putting a description item with a double colon in an org
+  ;; link. Doing so makes the link inactive.
+  (org-link-make-string url (s-replace "::" ":" name)))
 
-(defun grab-mac-link-make-markdown-link (url name)
+(defun gml--make-markdown-link (url name)
   "Make a Markdown inline link."
   (format "[%s](%s)" name url))
 
-(defun grab-mac-link-make-html-link (url name)
+(defun gml--make-html-link (url name)
   "Make an HTML <a> link."
   (format "<a href=\"%s\">%s</a>" url name))
 
 
 ;; Google Chrome.app
 
-(defun grab-mac-link-chrome-1 ()
-  (let ((result
+(defun gml--chrome-handler ()
+  (let ((raw-link
          (do-applescript
           (concat
            "set frontmostApplication to path to frontmost application\n"
@@ -143,57 +143,91 @@ This will use the command `open' with the message URL."
            "set links to {}\n"
            "copy theResult to the end of links\n"
            "return links as string\n"))))
-    (grab-mac-link-split
+    (gml--split
      (replace-regexp-in-string
-      "^\"\\|\"$" "" (car (split-string result "[\r\n]+" t))))))
+      "^\"\\|\"$" "" (car (split-string raw-link "[\r\n]+" t))))))
+
+
+;; Vivaldi.app
+
+;; very similar to the one from Chrome
+(defun gml--vivaldi-handler ()
+  (let ((raw-link
+         (condition-case nil
+	 (do-applescript
+	  (concat
+	   "set frontmostApplication to path to frontmost application\n"
+	   "tell application \"Vivaldi\"\n"
+	   "	set theUrl to get URL of active tab of first window\n"
+	   "	set theResult to (get theUrl) & \"::split::\" & (get name of window 1)\n"
+	   "end tell\n"
+	   "activate application (frontmostApplication as text)\n"
+	   "set links to {}\n"
+	   "copy theResult to the end of links\n"
+	   "return links as string\n"))
+         ;; if there is an applescript error (because there is no
+         ;; window), then return nil
+         (error nil))))
+    (if raw-link
+        (gml--split (car (split-string raw-link "[\r\n]+" t)))
+      nil)))
 
 
 ;; Firefox.app
 
-(defun grab-mac-link-firefox-1 ()
-  (let ((result
-         (do-applescript
-          (concat
-           "set oldClipboard to the clipboard\n"
-           "set frontmostApplication to path to frontmost application\n"
-           "tell application \"Firefox\"\n"
-           "	activate\n"
-           "	delay 0.15\n"
-           "	tell application \"System Events\"\n"
-           "		keystroke \"l\" using {command down}\n"
-           "		keystroke \"a\" using {command down}\n"
-           "		keystroke \"c\" using {command down}\n"
-           "	end tell\n"
-           "	delay 0.15\n"
-           "	set theUrl to the clipboard\n"
-           "	set the clipboard to oldClipboard\n"
-           "	set theResult to (get theUrl) & \"::split::\" & (get name of window 1)\n"
-           "end tell\n"
-           "activate application (frontmostApplication as text)\n"
-           "set links to {}\n"
-           "copy theResult to the end of links\n"
-           "return links as string\n"))))
-    (grab-mac-link-split
-     (car (split-string result "[\r\n]+" t)))))
+(defvar gml--firefox-app-name "Firefox"
+  "Name of the firefox app, eg, \"Firefox\" or \"Firefox Nightly\".")
+
+(defun gml--firefox-handler ()
+  (let* ((raw-link
+          (do-applescript
+           (concat
+            "set oldClipboard to the clipboard\n"
+            ;; clear out the clipboard in case there is nothing for
+            ;; firefox to return
+            "set the clipboard to \"\"\n"
+            "set frontmostApplication to path to frontmost application\n"
+            "tell application \"" gml--firefox-app-name "\"\n"
+            "	activate\n"
+            "	delay 0.15\n"
+            "	tell application \"System Events\"\n"
+            "		keystroke \"l\" using {command down}\n"
+            "		keystroke \"a\" using {command down}\n"
+            "		keystroke \"c\" using {command down}\n"
+            "	end tell\n"
+            "	delay 0.15\n"
+            "	set theUrl to the clipboard\n"
+            "	set the clipboard to oldClipboard\n"
+            "	set theResult to (get theUrl) & \"::split::\" & (get name of window 1)\n"
+            "end tell\n"
+            "activate application (frontmostApplication as text)\n"
+            "set links to {}\n"
+            "copy theResult to the end of links\n"
+            "return links as string\n")))
+         (link-list (gml--split (car (split-string raw-link "[\r\n]+" t)))))
+        (if (string-equal "" (car link-list))
+            nil
+          link-list)))
 
 
 ;; Safari.app
 
-(defun grab-mac-link-safari-1 ()
-  (grab-mac-link-split
-   (grab-mac-link-unquote
-    (do-applescript
-     (concat
-      "tell application \"Safari\"\n"
-      "	set theUrl to URL of document 1\n"
-      "	set theName to the name of the document 1\n"
-      "	return theUrl & \"::split::\" & theName\n"
-      "end tell\n")))))
+(defun gml--safari-handler ()
+  (let ((raw-link (do-applescript
+                   (concat
+                    "tell application \"Safari\"\n"
+                    "	set theUrl to URL of document 1\n"
+                    "	set theName to the name of the document 1\n"
+                    "	return theUrl & \"::split::\" & theName\n"
+                    "end tell\n"))))
+    (if (stringp raw-link)
+        (gml--split (gml--unquote raw-link))
+      nil)))
 
 
 ;; Finder.app
 
-(defun grab-mac-link-finder-selected-items ()
+(defun gml--finder-selected-items ()
   (split-string
    (do-applescript
     (concat
@@ -208,18 +242,18 @@ This will use the command `open' with the message URL."
      "end tell\n"))
    "\n" t))
 
-(defun grab-mac-link-finder-1 ()
+(defun gml--finder-handler ()
   "Return selected file in Finder.
-If there are more than more selected files, just return the first one.
-If there is none, return nil."
-  (car (mapcar #'grab-mac-link-split (grab-mac-link-finder-selected-items))))
+If there are more than one selected files, just return the first one.
+If there are none, return nil."
+  (car (mapcar #'gml--split (gml--finder-selected-items))))
 
 
 ;; Mail.app
 
-(defun grab-mac-link-mail-1 ()
+(defun gml--mail-handler ()
   "AppleScript to create links to selected messages in Mail.app."
-  (grab-mac-link-split
+  (gml--split
    (do-applescript
     (concat
      "tell application \"Mail\"\n"
@@ -240,9 +274,9 @@ If there is none, return nil."
 
 ;; Terminal.app
 
-(defun grab-mac-link-terminal-1 ()
-  (grab-mac-link-split
-   (grab-mac-link-unquote
+(defun gml--terminal-handler ()
+  (gml--split
+   (gml--unquote
     (do-applescript
      (concat
       "tell application \"Terminal\"\n"
@@ -254,8 +288,8 @@ If there is none, return nil."
 
 
 ;; Skim.app
-(defun grab-mac-link-skim-1 ()
-  (grab-mac-link-split
+(defun gml--skim-handler ()
+  (gml--split
    (do-applescript
     (concat
      "tell application \"Skim\"\n"
@@ -276,95 +310,120 @@ If there is none, return nil."
 
 ;; One Entry point for all
 
+(defvar gml--app-alist
+  '(("chrome" . gml--chrome-handler)
+    ("safari" . gml--safari-handler)
+    ("firefox" . gml--firefox-handler)
+    ("vivaldi" . gml--vivaldi-handler)
+    ("Finder" . gml--finder-handler)
+    ("mail" . gml--mail-handler)
+    ("terminal" . gml--terminal-handler)
+    ("Skim" . gml--skim-handler))
+  "Alist of (app-name . app-fn). First char of app-name is used
+for the menu.")
+
+(defvar gml--link-types-alist
+  '(("plain" . gml--make-plain-link)
+    ("markdown" . gml--make-markdown-link)
+    ("org" . gml--make-org-link)
+    ("html" . gml--make-html-link))
+  "Alist of (link-type-name . link-fn). First char of
+link-type-name is used for the menu.")
+
+(defvar gml--link-type-mode-alist
+  '((markdown-mode . "markdown")
+    (org-mode . "org")
+    (html-mode . "html"))
+  "Alist of (mode-symbol . link-type-name)")
+
+(defface gml-dispatcher-highlight
+  '((t :background "gold1"))
+  "The background color used to highlight the dispatch character.")
+
+(defun gml--create-menu-string (alist)
+  "Build the menu string from ALIST. First char of name is used
+for dispatching, and is marked with brackets and a different
+face."
+  (cl-loop for (app-string . fn) in alist
+           collect (concat " ["
+                           (propertize (substring app-string 0 1) 'face 'gml-dispatcher-highlight)
+                           "]"
+                           (substring app-string 1))
+           into s-list
+           finally (return (apply #'concat s-list))))
+
+(defun gml--assoc-first-char (char alist)
+  "Like assoc, but match on CHAR and first character of the car of
+each pair in ALIST"
+  (let ((case-fold-search nil))
+    (cl-assoc-if (lambda (s) (char-equal char (aref s 0))) alist)))
+
+(defvar grab-mac-link-preferred-app nil
+  "Preferred app to use when `grab-mac-link' is called with two
+prefix arguments. Should be a string, such as \"firefox\", that
+appears in `gml--app-alist")
+
+(defvar grab-mac-link-preferred-link-type nil
+  "Preferred link type to use when `grab-mac-link' is called with
+two prefix arguments. Can be a string, such as \"org\", nil for
+no default, or 'from-mode to guess from the current buffer mode.")
+
 ;;;###autoload
-(defun grab-mac-link (app &optional link-type)
+(defun grab-mac-link (arg)
   "Prompt for an application to grab a link from.
 When done, go grab the link, and insert it at point.
 
-With a prefix argument, instead of \"insert\", save it to
-kill-ring. For org link, save it to `org-stored-links', then
-later you can insert it via `org-insert-link'.
+With single prefix argument, instead of \"insert\", save link to
+kill-ring. For an org link, save it to `org-stored-links' so you
+insert it with `org-insert-link'.
 
-If called from lisp, grab link from APP and return it (as a
-string) with LINK-TYPE.  APP is a symbol and must be one of
-'(chrome safari finder mail terminal), LINK-TYPE is also a symbol
-and must be one of '(plain markdown org), if LINK-TYPE is omitted
-or nil, plain link will be used."
-  (interactive
-   (let ((apps
-          '((?c . chrome)
-            (?s . safari)
-            (?f . firefox)
-            (?F . finder)
-            (?m . mail)
-            (?t . terminal)
-            (?S . skim)))
-         (link-types
-          '((?p . plain)
-            (?m . markdown)
-            (?o . org)
-            (?h . html)))
-         (propertize-menu
-          (lambda (string)
-            "Propertize substring between [] in STRING."
-            (with-temp-buffer
-              (insert string)
-              (goto-char 1)
-              (while (re-search-forward "\\[\\(.+?\\)\\]" nil 'no-error)
-                (replace-match (format "[%s]" (propertize (match-string 1) 'face 'bold))))
-              (buffer-string))))
-         input app link-type)
-     (let ((message-log-max nil))
-       (message (funcall propertize-menu
-                         "Grab link from [c]hrome [s]afari [f]irefox [F]inder [m]ail [t]erminal [S]kim:")))
-     (setq input (read-char-exclusive))
-     (setq app (cdr (assq input apps)))
-     (let ((message-log-max nil))
-       (message (funcall propertize-menu
-                         (format "Grab link from %s as a [p]lain [m]arkdown [o]rg [h]tml link:" app))))
-     (setq input (read-char-exclusive))
-     (setq link-type (cdr (assq input link-types)))
-     (list app link-type)))
-
-  (setq link-type (or link-type 'plain))
-  (unless (and (memq app '(chrome safari firefox finder mail terminal skim))
-               (memq link-type '(plain org markdown html)))
-    (error "Unknown app %s or link-type %s" app link-type))
-  (let* ((grab-link-func (intern (format "grab-mac-link-%s-1" app)))
-         (make-link-func (intern (format "grab-mac-link-make-%s-link" link-type)))
-         (link (apply make-link-func (funcall grab-link-func))))
-    (when (called-interactively-p 'any)
-      (if current-prefix-arg
-          (if (eq link-type 'org)
-              (let* ((res (funcall grab-link-func))
-                     (link (car res))
-                     (desc (cadr res)))
-                (push (list link desc) org-stored-links)
-                (message "Stored: %s" desc))
-            (kill-new link)
-            (message "Copied: %s" link))
-        (insert link)))
+With two prefix arguments, use the default app name in
+`grab-mac-link-preferred--app' and guess the link type from the
+current buffer's mode as per
+`grab-mac-link-preferred-link-type'."
+  (interactive "p")
+  (let* ((app-name (if (= arg 16)
+                       grab-mac-link-dwim-favourite-app
+                     (let* ((app-menu (format "Grab link from%s"
+                                              (gml--create-menu-string gml--app-alist)))
+                            (input1 (read-char-exclusive app-menu)))
+                       (or (car (gml--assoc-first-char input1 gml--app-alist))
+                           (error (format "%s is not a valid input" (char-to-string input1)))))))
+         (link-type (if (= arg 16)
+                        (if (eq grab-mac-link-preferred-link-type 'from-mode)
+                          (cl-loop for (mode-symbol . link-type-name) in gml--link-type-mode-alist
+                                   when (derived-mode-p mode-symbol)
+                                   return link-type-name
+                                   finally (return "plain"))
+                          (or grab-mac-link-preferred-link-type
+                              "plain"))
+                      (let* ((link-type-menu (format "Grab link from %s as a%s link:"
+                                                     app-name
+                                                     (gml--create-menu-string gml--link-types-alist)))
+                             (input2 (read-char-exclusive link-type-menu)))
+                        (or (car (gml--assoc-first-char input2 gml--link-types-alist))
+                            ;; if not specified (or incorrectly specified), then use plain
+                            "plain"))))
+         (grab-link-fn (cdr (gml--assoc-first-char (aref app-name 0) gml--app-alist)))
+         (make-link-fn (cdr (gml--assoc-first-char (aref link-type 0) gml--link-types-alist)))
+         (raw-link (funcall grab-link-fn))
+         (link (if raw-link
+                   (apply make-link-fn raw-link)
+                 (error "Nothing to link to found in app %s" app-name))))
+    (if (= arg 4)
+        (if (string-equal link-type "org")
+            (let* ((res raw-link)
+                   (link (car res))
+                   (desc (cadr res)))
+              ;; for org-mode, store in org's var
+              (push (list link desc) org-stored-links)
+              (message "Stored: %s" desc))
+          ;; not org mode, so put on kill ring
+          (kill-new link)
+          (message "Copied: %s" link))
+      ;; not arg 4, so insert in current buffer
+      (insert link))
     link))
-
-;; NOTE A good idea is to use most recent application, however I don't know how
-;; to get such information.
-(defvar grab-mac-link-dwim-favourite-app nil)
-
-;;;###autoload
-(defun grab-mac-link-dwim (app)
-  (interactive
-   (list
-    (or
-     (and (not current-prefix-arg) grab-mac-link-dwim-favourite-app)
-     (intern (completing-read "Application: "
-                              '(chrome safari firefox finder mail terminal skim)
-                              nil t)))))
-  (let ((link-type (cond
-                    ((derived-mode-p 'markdown-mode) 'markdown)
-                    ((derived-mode-p 'org-mode)      'org)
-                    ((derived-mode-p 'html-mode)     'html)
-                    (t 'plain))))
-    (insert (grab-mac-link app link-type))))
 
 (provide 'grab-mac-link)
 ;;; grab-mac-link.el ends here
