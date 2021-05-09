@@ -31,14 +31,14 @@ arguments, uses the default app and link-type instead of prompting.
 
 ### Customization
 
-Set `grab-mac-link-preferred-app' to the name of the app to use.
+Set `grab-mac-link-preferred-app` to the name of the app to use.
 
 ``` emacs-lisp
 (setq grab-mac-link-preferred-app "firefox")
 ```
 
-Set `grab-mac-link-preferred-link-type' to the name of the link-type, eg, "org".
-Choose an application according to
+Set `grab-mac-link-preferred-link-type` to the name of the link-type,
+eg, "org". Choose an application according to
 `grab-mac-link-dwim-favourite-app` and link type according to the
 current buffer's major mode, i.e., `major-mode`.
 
