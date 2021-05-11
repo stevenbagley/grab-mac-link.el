@@ -383,7 +383,7 @@ current buffer's mode as per
 `grab-mac-link-preferred-link-type'."
   (interactive "p")
   (let* ((app-name (if (= arg 16)
-                       grab-mac-link-dwim-favourite-app
+                       grab-mac-link-preferred-app
                      (let* ((app-menu (format "Grab link from%s"
                                               (gml--create-menu-string gml--app-alist)))
                             (input1 (read-char-exclusive app-menu)))
