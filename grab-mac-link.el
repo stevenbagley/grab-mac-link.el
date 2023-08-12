@@ -71,7 +71,8 @@
 (defvar org-stored-links)
 
 (defun gml--split (as-link)
-  (split-string as-link "::split::"))
+  ;; split at marker and remove "'s
+  (split-string as-link "::split::" t "\""))
 
 (defun gml--unquote (s)
   (if (string-prefix-p "\"" s)
