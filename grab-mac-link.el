@@ -42,6 +42,7 @@
 ;; - Chrome
 ;; - Safari
 ;; - Firefox
+;; - Floorp
 ;; - Vivaldi
 ;; - Finder
 ;; - Mail
@@ -211,6 +212,40 @@ This will use the command `open' with the message URL."
           link-list)))
 
 
+;; Floorp.app
+
+(defun gml--floorp-handler ()
+  (let* ((raw-link
+          (do-applescript
+           (concat
+            "set oldClipboard to the clipboard\n"
+            ;; clear out the clipboard in case there is nothing for
+            ;; floorp to return
+            "set the clipboard to \"\"\n"
+            "set frontmostApplication to path to frontmost application\n"
+            "tell application \"Floorp\"\n"
+            "	activate\n"
+            "	delay 0.06\n"
+            "	tell application \"System Events\"\n"
+            "		keystroke \"l\" using {command down}\n"
+            "		keystroke \"a\" using {command down}\n"
+            "		keystroke \"c\" using {command down}\n"
+            "	end tell\n"
+            "	delay 0.06\n"
+            "	set theUrl to the clipboard\n"
+            "	set the clipboard to oldClipboard\n"
+            "	set theResult to (get theUrl) & \"::split::\" & (get name of window 1)\n"
+            "end tell\n"
+            "activate application (frontmostApplication as text)\n"
+            "set links to {}\n"
+            "copy theResult to the end of links\n"
+            "return links as string\n")))
+         (link-list (gml--split (car (split-string raw-link "[\r\n]+" t)))))
+        (if (string-equal "" (car link-list))
+            nil
+          link-list)))
+
+
 ;; Safari.app
 
 (defun gml--safari-handler ()
@@ -312,24 +347,23 @@ If there are none, return nil."
 ;; One Entry point for all
 
 (defvar gml--app-alist
-  '(("chrome" . gml--chrome-handler)
-    ("safari" . gml--safari-handler)
-    ("firefox" . gml--firefox-handler)
-    ("vivaldi" . gml--vivaldi-handler)
-    ("Finder" . gml--finder-handler)
-    ("mail" . gml--mail-handler)
-    ("terminal" . gml--terminal-handler)
-    ("Skim" . gml--skim-handler))
-  "Alist of (app-name . app-fn). First char of app-name is used
-for the menu.")
+  '((?c "chrome"   gml--chrome-handler)
+    (?s "safari"   gml--safari-handler)
+    (?f "firefox"  gml--firefox-handler)
+    (?p "floorp"   gml--floorp-handler)
+    (?v "vivaldi"  gml--vivaldi-handler)
+    (?F "finder"   gml--finder-handler)
+    (?m "mail"     gml--mail-handler)
+    (?t "terminal" gml--terminal-handler)
+    (?S "skim"     gml--skim-handler))
+  "Alist of (app-char app-name app-handler-fn).")
 
 (defvar gml--link-types-alist
-  '(("plain" . gml--make-plain-link)
-    ("markdown" . gml--make-markdown-link)
-    ("org" . gml--make-org-link)
-    ("html" . gml--make-html-link))
-  "Alist of (link-type-name . link-fn). First char of
-link-type-name is used for the menu.")
+  '((?p "plain"    gml--make-plain-link)
+    (?m "markdown" gml--make-markdown-link)
+    (?o "org"      gml--make-org-link)
+    (?h "html"     gml--make-html-link))
+  "Alist of (link-type-char link-type-name link-fn).")
 
 (defvar gml--link-type-mode-alist
   '((markdown-mode . "markdown")
@@ -342,22 +376,16 @@ link-type-name is used for the menu.")
   "The background color used to highlight the dispatch character.")
 
 (defun gml--create-menu-string (alist)
-  "Build the menu string from ALIST. First char of name is used
+  "Build the menu string from ALIST. The app-char is used
 for dispatching, and is marked with brackets and a different
 face."
-  (cl-loop for (app-string . fn) in alist
+  (cl-loop for (app-char app-string app-fn) in alist
            collect (concat " ["
-                           (propertize (substring app-string 0 1) 'face 'gml-dispatcher-highlight)
+                           (propertize (string app-char) 'face 'gml-dispatcher-highlight)
                            "]"
-                           (substring app-string 1))
+                           app-string)
            into s-list
            finally (return (apply #'concat s-list))))
-
-(defun gml--assoc-first-char (char alist)
-  "Like assoc, but match on CHAR and first character of the car of
-each pair in ALIST"
-  (let ((case-fold-search nil))
-    (cl-assoc-if (lambda (s) (char-equal char (aref s 0))) alist)))
 
 (defvar grab-mac-link-preferred-app nil
   "Preferred app to use when `grab-mac-link' is called with two
@@ -376,37 +404,24 @@ When done, go grab the link, and insert it at point.
 
 With single prefix argument, instead of \"insert\", save link to
 kill-ring. For an org link, save it to `org-stored-links' so you
-insert it with `org-insert-link'.
-
-With two prefix arguments, use the default app name in
-`grab-mac-link-preferred--app' and guess the link type from the
-current buffer's mode as per
-`grab-mac-link-preferred-link-type'."
+insert it with `org-insert-link'."
   (interactive "p")
-  (let* ((app-name (if (= arg 16)
-                       grab-mac-link-preferred-app
-                     (let* ((app-menu (format "Grab link from%s"
-                                              (gml--create-menu-string gml--app-alist)))
-                            (input1 (read-char-exclusive app-menu)))
-                       (or (car (gml--assoc-first-char input1 gml--app-alist))
-                           (error (format "%s is not a valid input" (char-to-string input1)))))))
-         (link-type (if (= arg 16)
-                        (if (eq grab-mac-link-preferred-link-type 'from-mode)
-                          (cl-loop for (mode-symbol . link-type-name) in gml--link-type-mode-alist
-                                   when (derived-mode-p mode-symbol)
-                                   return link-type-name
-                                   finally (return "plain"))
-                          (or grab-mac-link-preferred-link-type
-                              "plain"))
-                      (let* ((link-type-menu (format "Grab link from %s as a%s link:"
-                                                     app-name
-                                                     (gml--create-menu-string gml--link-types-alist)))
-                             (input2 (read-char-exclusive link-type-menu)))
-                        (or (car (gml--assoc-first-char input2 gml--link-types-alist))
-                            ;; if not specified (or incorrectly specified), then use plain
-                            "plain"))))
-         (grab-link-fn (cdr (gml--assoc-first-char (aref app-name 0) gml--app-alist)))
-         (make-link-fn (cdr (gml--assoc-first-char (aref link-type 0) gml--link-types-alist)))
+  (let* ((app-menu (format "Grab link from%s"
+                           (gml--create-menu-string gml--app-alist)))
+         (input1 (read-char-exclusive app-menu))
+         (app-entry (or (assoc input1 gml--app-alist)
+                        (error (format "%s is not a valid input" (string input1)))))
+         (app-name (cadr app-entry))
+         (link-type-menu (format "Grab link from %s as a%s link:"
+                                 app-name
+                                 (gml--create-menu-string gml--link-types-alist)))
+         (input2 (read-char-exclusive link-type-menu))
+         (grab-link-fn (caddr app-entry))
+         (link-entry (assoc input2 gml--link-types-alist))
+         (link-type (or (cadr link-entry)
+                        ;; if not specified (or incorrectly specified), then use plain
+                        "plain"))
+         (make-link-fn (caddr link-entry))
          (raw-link (funcall grab-link-fn))
          (link (if raw-link
                    (apply make-link-fn raw-link)
