@@ -114,6 +114,8 @@ This will use the command `open' with the message URL."
   (start-process (concat "open message:" message-id) nil
                  "open" (concat "message://<" (substring message-id 2) ">")))
 
+;; make links
+
 (defun gml--make-org-link (url name)
   "Make an org-mode compatible link."
   ;; avoid putting a description item with a double colon in an org
@@ -281,10 +283,9 @@ This will use the command `open' with the message URL."
    "\n" t))
 
 (defun gml--finder-handler ()
-  "Return selected file in Finder.
-If there are more than one selected files, just return the first one.
+  "Return selected file(s) in Finder.
 If there are none, return nil."
-  (car (mapcar #'gml--split (gml--finder-selected-items))))
+  (mapcar #'gml--split (gml--finder-selected-items)))
 
 
 ;; Mail.app
@@ -402,46 +403,41 @@ no default, or 'from-mode to guess from the current buffer mode.")
 ;;;###autoload
 (defun grab-mac-link (arg)
   "Prompt for an application to grab a link from.
-When done, go grab the link, and insert it at point.
-
-With single prefix argument, instead of \"insert\", save link to
-kill-ring. For an org link, save it to `org-stored-links' so you
-insert it with `org-insert-link'."
+When done, grab the link(s), and insert at point."
   (interactive "p")
   (let* ((app-menu (format "Grab link from%s"
                            (gml--create-menu-string gml--app-alist)))
+         ;; input1 is a character
          (input1 (read-char-exclusive app-menu))
+         ;; app-entry is (<char> <string> <handler>)
          (app-entry (or (assoc input1 gml--app-alist)
                         (error (format "%s is not a valid input" (string input1)))))
+         ;; app-name is <string>
          (app-name (cadr app-entry))
          (link-type-menu (format "Grab link from %s as a%s link:"
                                  app-name
                                  (gml--create-menu-string gml--link-types-alist)))
          (input2 (read-char-exclusive link-type-menu))
+         ;; grab-link-fn is the handler to get the link info from that app
          (grab-link-fn (caddr app-entry))
+         ;; link-entry is (<char> <format> <link-fn>)
          (link-entry (assoc input2 gml--link-types-alist))
+         ;; link-type is string, naming the desired type to return
          (link-type (or (cadr link-entry)
                         ;; if not specified (or incorrectly specified), then use plain
                         "plain"))
          (make-link-fn (caddr link-entry))
-         (raw-link (funcall grab-link-fn))
-         (link (if raw-link
-                   (apply make-link-fn raw-link)
-                 (error "Nothing to link to found in app %s" app-name))))
-    (if (= arg 4)
-        (if (string-equal link-type "org")
-            (let* ((res raw-link)
-                   (link (car res))
-                   (desc (cadr res)))
-              ;; for org-mode, store in org's var
-              (push (list link desc) org-stored-links)
-              (message "Stored: %s" desc))
-          ;; not org mode, so put on kill ring
-          (kill-new link)
-          (message "Copied: %s" link))
-      ;; not arg 4, so insert in current buffer
-      (insert link))
-    link))
+         ;; get the info from the app
+         (raw-link (funcall grab-link-fn)))
+    (when (null raw-link)
+      (error "Nothing to link to found in app %s" app-name))
+    ;; finder returns list of links, others do not
+    (unless (string= app-name "finder")
+      (setq raw-link (list raw-link)))
+    (cl-loop with multiple? = (not (null (cdr raw-link)))
+             for rl in raw-link
+             for link = (apply make-link-fn rl)
+             do (insert link) (when multiple? (insert "\n")))))
 
 (provide 'grab-mac-link)
 ;;; grab-mac-link.el ends here
